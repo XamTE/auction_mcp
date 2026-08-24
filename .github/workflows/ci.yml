@@ -17,3 +17,24 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run typecheck
       - run: npm run build
+      - name: Start MCP app
+        run: |
+          MCP_AUTH_TOKEN=ci-smoke-token npm run start > /tmp/mcp-next.log 2>&1 &
+          echo $! > /tmp/mcp-next.pid
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health > /tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/mcp-next.log
+          exit 1
+      - name: MCP end-to-end smoke
+        env:
+          MCP_AUTH_TOKEN: ci-smoke-token
+          MCP_TEST_URL: http://127.0.0.1:3000/api/mcp
+        run: npm run smoke:mcp
+      - name: App logs on failure
+        if: failure()
+        run: cat /tmp/mcp-next.log || true
