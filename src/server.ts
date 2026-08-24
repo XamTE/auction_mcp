@@ -15,6 +15,12 @@ const SERVER_NAME = 'court-auction-mcp';
 const SERVER_VERSION = '0.1.0';
 const DISCLAIMER =
   '법원경매정보 공개 데이터를 조회하는 참고용 read-only 도구입니다. 실제 입찰 전에는 반드시 법원 원문 공고·물건서류와 최신 정정/취하/연기 여부를 다시 확인하세요.';
+const SEARCH_VERIFICATION_NOTICE =
+  '검색 결과는 후보 목록입니다. 묶음물건과 법원 검색색인 갱신 시점 때문에 가격 필터가 개별 물건에 엄격히 적용되지 않거나 목록의 최저가가 최신 공고보다 이전 회차일 수 있습니다. 최종 가격·보증금·기일을 제시하기 전에 후보 사건마다 get_auction_case를 호출하고 verification.currentSaleTerms를 우선 사용하세요.';
+
+const SIDO_ALIASES: Record<string, string> = {
+  경기: '경기도',
+};
 
 function compactObject(input: Record<string, unknown>): JsonObject {
   return Object.fromEntries(
@@ -28,11 +34,107 @@ function compactObject(input: Record<string, unknown>): JsonObject {
   );
 }
 
-function toolSuccess(data: unknown) {
-  const payload = { disclaimer: DISCLAIMER, data };
+function toolSuccess(data: unknown, guidance?: JsonObject) {
+  const payload = {
+    disclaimer: DISCLAIMER,
+    ...(guidance ? { guidance } : {}),
+    data,
+  };
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
     structuredContent: payload,
+  };
+}
+
+export function normalizeSido(input?: string): string | undefined {
+  const value = input?.trim();
+  if (!value) return undefined;
+  return SIDO_ALIASES[value] ?? value;
+}
+
+function asObject(value: unknown): JsonObject | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as JsonObject)
+    : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function formatCompactDate(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const digits = value.replace(/\D/g, '');
+  if (digits.length !== 8) return value || undefined;
+  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+}
+
+function formatCompactTime(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const digits = value.replace(/\D/g, '').padStart(4, '0');
+  if (digits.length !== 4) return value || undefined;
+  return `${digits.slice(0, 2)}:${digits.slice(2, 4)}`;
+}
+
+export function extractCurrentSaleTerms(result: JsonObject): JsonObject[] {
+  const raw = asObject(result.raw);
+  const rawData = asObject(raw?.data);
+  const rows = rawData?.dlt_dspslGdsDspslObjctLst;
+  if (!Array.isArray(rows)) return [];
+
+  const seen = new Set<string>();
+  const terms: JsonObject[] = [];
+
+  for (const value of rows) {
+    const row = asObject(value);
+    if (!row || row.gdsDspslProgYn === 'N') continue;
+
+    const propertyNumber = numberValue(row.dspslGdsSeq);
+    const saleDate = formatCompactDate(row.dspslDxdyYmd);
+    const minimumSalePriceWon = numberValue(row.fstPbancLwsDspslPrc);
+    const depositRatePercent = numberValue(row.prchDposRate);
+    const key = [propertyNumber, saleDate, minimumSalePriceWon, depositRatePercent].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const calculatedDepositWon =
+      minimumSalePriceWon !== undefined && depositRatePercent !== undefined
+        ? Math.ceil((minimumSalePriceWon * depositRatePercent) / 100)
+        : undefined;
+
+    terms.push(
+      compactObject({
+        propertyNumber,
+        saleDate,
+        saleTime: formatCompactTime(row.fstDspslHm),
+        appraisedPriceWon: numberValue(row.aeeEvlAmt),
+        minimumSalePriceWon,
+        depositRatePercent,
+        calculatedDepositWon,
+        remarks: row.dspslGdsRmk,
+        courtProgressStatusCode: row.csProgStatCd,
+        propertyStatusCode: row.auctnGdsStatCd,
+      }),
+    );
+  }
+
+  return terms;
+}
+
+function verifiedCaseResult(result: JsonObject): JsonObject {
+  return {
+    ...result,
+    verification: {
+      source: 'get_auction_case raw current sale notice',
+      currentSaleTerms: extractCurrentSaleTerms(result),
+      useBeforeFinalAnswer:
+        '검색목록 값보다 이 currentSaleTerms의 매각기일·최저매각가격·보증금률을 우선하세요. calculatedDepositWon은 최저가×보증금률 산정치이므로 실제 입찰 전 법원 원문을 다시 확인하세요.',
+    },
   };
 }
 
@@ -71,7 +173,7 @@ export function buildServer(): McpServer {
     {
       capabilities: { tools: {} },
       instructions:
-        '대한민국 법원경매정보의 부동산 경매 정보를 읽기 전용으로 조회합니다. 입찰·제출·결제 같은 행위는 하지 않습니다.',
+        '대한민국 법원경매정보의 부동산 경매 정보를 읽기 전용으로 조회합니다. 입찰·제출·결제 같은 행위는 하지 않습니다. search_auctions는 후보 탐색용이며, 가격·보증금·매각기일을 최종 제시하기 전 반드시 후보별 get_auction_case를 호출하고 verification.currentSaleTerms를 우선 사용합니다.',
     },
   );
 
@@ -80,12 +182,12 @@ export function buildServer(): McpServer {
     {
       title: '경매 물건 조건검색',
       description:
-        '지역, 용도, 최저매각가, 감정평가액, 면적, 유찰횟수, 매각기일 등으로 부동산 경매 물건을 검색합니다.',
+        '지역, 용도, 최저매각가, 감정평가액, 면적, 유찰횟수, 매각기일 등으로 후보 물건을 검색합니다. 중요: 목록 가격과 가격필터는 묶음물건·색인 갱신 차이로 최신 개별 공고와 다를 수 있습니다. 최종 가격·보증금·기일을 답하기 전 후보마다 get_auction_case를 호출하고 verification.currentSaleTerms를 우선 사용하세요.',
       inputSchema: z.object({
         sido: z
           .string()
           .optional()
-          .describe('시도명 또는 코드. 예: 서울특별시, 경기, 11.'),
+          .describe('시도 공식명 또는 코드. 예: 서울특별시, 경기도, 11. 약칭 경기 입력은 경기도로 자동 정규화됩니다.'),
         sigungu_code: z
           .string()
           .optional()
@@ -134,8 +236,9 @@ export function buildServer(): McpServer {
           courtName: args.court_name,
         });
 
+        const normalizedSido = normalizeSido(args.sido);
         const region = compactObject({
-          sido: args.sido,
+          sido: normalizedSido,
           sigungu: args.sigungu_code,
           dong: args.dong_code,
         });
@@ -173,7 +276,23 @@ export function buildServer(): McpServer {
         });
 
         const result = await searchAuctions(query);
-        return toolSuccess(sliceItems(result, args.max_results));
+        const normalizedInput =
+          args.sido && normalizedSido !== args.sido.trim()
+            ? { receivedSido: args.sido, usedSido: normalizedSido }
+            : undefined;
+        return toolSuccess(sliceItems(result, args.max_results), {
+          resultType: 'candidate-list',
+          verificationRequired: true,
+          requiredFollowUpTool: 'get_auction_case',
+          verifyFields: [
+            'verification.currentSaleTerms.saleDate',
+            'verification.currentSaleTerms.minimumSalePriceWon',
+            'verification.currentSaleTerms.depositRatePercent',
+            'verification.currentSaleTerms.calculatedDepositWon',
+          ],
+          notice: SEARCH_VERIFICATION_NOTICE,
+          ...(normalizedInput ? { normalizedInput } : {}),
+        });
       } catch (error) {
         return toolError(error);
       }
@@ -185,7 +304,7 @@ export function buildServer(): McpServer {
     {
       title: '경매 사건 상세조회',
       description:
-        '법원과 사건번호로 사건 기본정보, 물건내역, 배당요구종기, 매각기일 이력 등을 조회합니다.',
+        '법원과 사건번호로 사건 기본정보, 물건내역, 배당요구종기, 매각기일 이력과 최신 공고 기준 currentSaleTerms를 조회합니다. 검색목록과 값이 다르면 verification.currentSaleTerms의 최저가·보증금률·기일을 우선하세요.',
       inputSchema: z.object({
         case_number: z
           .string()
@@ -205,7 +324,10 @@ export function buildServer(): McpServer {
           courtCode,
           caseNumber: args.case_number,
         });
-        return toolSuccess(result);
+        return toolSuccess(verifiedCaseResult(result), {
+          resultType: 'case-detail-verification',
+          preferredFields: 'data.verification.currentSaleTerms',
+        });
       } catch (error) {
         return toolError(error);
       }
@@ -294,7 +416,7 @@ export function buildServer(): McpServer {
     {
       title: '경매 사건 결과 조회',
       description:
-        '특정 사건의 현재 진행상태와 매각기일별 결과 이력을 조회합니다. 사건 단위 결과 확인용입니다.',
+        '특정 사건의 현재 진행상태, 매각기일별 결과 이력, 최신 공고 기준 currentSaleTerms를 조회합니다. 사건 단위 결과와 최신 가격·보증금 확인용입니다.',
       inputSchema: z.object({
         case_number: z.string().describe('사건번호. 예: 2024타경100001.'),
         ...courtFields,
@@ -322,6 +444,7 @@ export function buildServer(): McpServer {
           claimDeadline: result.claimDeadline,
           schedule: result.schedule,
           items: args.include_case_items ? result.items : undefined,
+          verification: verifiedCaseResult(result).verification,
         };
         return toolSuccess(summarized);
       } catch (error) {

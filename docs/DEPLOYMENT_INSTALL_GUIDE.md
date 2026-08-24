@@ -97,6 +97,18 @@ auction_mcp/
 
 경매 물건 검색.
 
+중요 동작:
+
+```text
+"경기" 입력은 "경기도"로 자동 정규화됨
+검색 응답은 후보 목록이며 최종 가격 확인용이 아님
+가격·보증금·매각기일을 답하기 전 후보별 get_auction_case 호출 필요
+```
+
+법원 검색색인의 갱신 시점이나 묶음물건 때문에 목록의 가격 상한 필터가 개별
+물건에 엄격히 적용되지 않거나 목록 최저가가 최신 공고보다 이전 회차일 수 있습니다.
+검색 응답의 `guidance.requiredFollowUpTool`과 안내 문구를 따릅니다.
+
 예시 요청:
 
 ```text
@@ -120,6 +132,25 @@ auction_mcp/
 ## `get_auction_case`
 
 사건번호 기준 상세 조회.
+
+응답의 다음 경로에 최신 공고 기준 확인값이 함께 제공됩니다.
+
+```text
+data.verification.currentSaleTerms[]
+```
+
+주요 필드:
+
+```text
+saleDate
+minimumSalePriceWon
+depositRatePercent
+calculatedDepositWon
+remarks
+```
+
+검색목록과 값이 다르면 이 값을 우선하되, 실제 입찰 전에는 법원 원문을 다시
+확인합니다.
 
 예시:
 
