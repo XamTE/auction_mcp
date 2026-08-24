@@ -27,6 +27,28 @@ type CourtAuctionPackage = {
 
 const auction = require('court-auction-notice-search') as CourtAuctionPackage;
 
+async function loadServerlessChromium() {
+  const [{ default: serverlessChromium }, { chromium }] = await Promise.all([
+    import('@sparticuz/chromium'),
+    import('playwright-core'),
+  ]);
+
+  return {
+    async launch(options: Record<string, unknown> = {}) {
+      return chromium.launch({
+        ...(options as Parameters<typeof chromium.launch>[0]),
+        args: serverlessChromium.args,
+        executablePath: await serverlessChromium.executablePath(),
+        headless: true,
+      });
+    },
+  };
+}
+
+const serverlessChromiumLoader = process.env.VERCEL
+  ? loadServerlessChromium
+  : undefined;
+
 type CacheEntry = {
   expiresAt: number;
   value: unknown;
@@ -188,7 +210,12 @@ export async function resolveCourt(ref: CourtRef): Promise<string | undefined> {
 
 export async function searchAuctions(input: JsonObject): Promise<JsonObject> {
   return cachedUpstream(cacheKey('search', input), SEARCH_TTL_MS, () =>
-    auction.searchProperties(input),
+    auction.searchProperties({
+      ...input,
+      ...(serverlessChromiumLoader
+        ? { chromiumLoader: serverlessChromiumLoader }
+        : {}),
+    }),
   );
 }
 

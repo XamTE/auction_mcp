@@ -2,6 +2,7 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   serverExternalPackages: [
+    '@sparticuz/chromium',
     'court-auction-notice-search',
     'k-skill-browser-runtime',
     'playwright-core',
