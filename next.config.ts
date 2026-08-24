@@ -1,6 +1,12 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  outputFileTracingIncludes: {
+    '/api/mcp': [
+      './node_modules/playwright-core/**/*',
+      './node_modules/@sparticuz/chromium/bin/**/*',
+    ],
+  },
   serverExternalPackages: [
     '@sparticuz/chromium',
     'court-auction-notice-search',
