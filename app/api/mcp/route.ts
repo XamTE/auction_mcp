@@ -1,5 +1,5 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import { buildServer } from '../../../src/server.js';
+import { buildServer } from '../../../src/server';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
