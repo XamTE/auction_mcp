@@ -7,6 +7,18 @@ const nextConfig: NextConfig = {
     'playwright-core',
     'rebrowser-playwright',
   ],
+  async rewrites() {
+    return [
+      {
+        source: '/.well-known/oauth-authorization-server',
+        destination: '/api/oauth-authorization-server',
+      },
+      {
+        source: '/.well-known/oauth-protected-resource',
+        destination: '/api/oauth-protected-resource',
+      },
+    ];
+  },
 };
 
 export default nextConfig;
